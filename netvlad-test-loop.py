@@ -19,8 +19,8 @@ import argparse
  
 parser = argparse.ArgumentParser(description='test mobile net vlad on real environment')
 parser.add_argument('--eg', type = str, help = 'example to use script')
-parser.add_argument('--base', type = str, default = '/home/tang/tang/netvlad_tf_open/test_images/memory', help = 'path to the base images folder')
-parser.add_argument('--test', type = str, default = '/home/tang/tang/netvlad_tf_open/test_images/live', help = 'path to the test images folder')
+parser.add_argument('--base', type = str, default = '/home/tang/tang/netvlad_tf_open/data/img/memory', help = 'path to the base images folder')
+parser.add_argument('--test', type = str, default = '/home/tang/tang/netvlad_tf_open/data/img/query', help = 'path to the test images folder')
 parser.add_argument('--weight', type = str, default = '/home/tang/tang/netvlad_tf_open/mobilenetvlad_depth-0.35', help = 'path to the weights folder')
 parser.add_argument('--size', type = int, default = '4096', help = 'the size of output feature')
 parser.add_argument('--thresh_trans', type = float, default = '1.0', help = 'the threshold of trans error(below this will be judged as positive match)')
@@ -39,13 +39,15 @@ def get_imgfiles_and_locmat(folder_path):
         raise Exception("no folder path given")
     print("folder path: ", folder_path)
     img_path_lists = []
+    img_name_lists = []
     for image in os.listdir(folder_path):
         img_path = join(folder_path, image)
         if exists(img_path):
             img_path_lists.append(img_path)
+            img_name_lists.append(image.rstrip('.jpg'))
         else:
             raise Exception("this image does not exist, which should not happen")
-    return img_path_lists
+    return img_path_lists, img_name_lists
  
 class Whole_base_test_ground_truth():
     def __init__(self, mat_base, mat_test):
@@ -76,16 +78,41 @@ class Whole_base_test_ground_truth():
                     index.append(predict_index)
  
         return distance, index
- 
+
+
+def list2matrix(input_list):
+    output_array = np.zeros((len(input_list), 2), dtype = np.double)
+    for i, list in enumerate(input_list):
+        output_array[i][0] = list[0]
+        output_array[i][1] = list[1]
+    return output_array
+
+
+def cp_img(base_name, base_name_path, query_name, query_name_path):
+    folder = "/home/tang/tang/netvlad_tf_open/data/corrspond"
+    folder_path = os.path.join(folder, query_name)
+    if not os.path.exists(folder_path):
+        os.mkdir(folder_path)
+    base_img_path_new = os.path.join(folder_path, base_name + '.jpg')
+    query_img_path_new = os.path.join(folder_path, query_name + '.jpg')
+    cp_cmd1 = "cp " + query_name_path + " " + query_img_path_new
+    cp_cmd2 = "cp " + base_name_path + " " + base_img_path_new
+    os.system(cp_cmd1)
+    os.system(cp_cmd2)
+
+
 if __name__ == "__main__":
     params = parser.parse_args()
     base_folder = params.base
     test_folder = params.test
     weight_folder = params.weight
     feature_size = params.size
+    if os.path.exists(base_folder):
+        father_folder = os.path.dirname(base_folder)
+        database = os.path.join(father_folder, "database.npy")
     # prerapre datas 
-    base_img_path_lists = get_imgfiles_and_locmat(base_folder)
-    test_img_path_lists = get_imgfiles_and_locmat(test_folder)
+    base_img_path_lists, base_img_name_lists = get_imgfiles_and_locmat(base_folder)
+    test_img_path_lists, test_img_name_lists = get_imgfiles_and_locmat(test_folder)
  
     base_length = len(base_img_path_lists)
     test_legnth = len(test_img_path_lists)
@@ -103,22 +130,28 @@ if __name__ == "__main__":
  
         # extract features from base dataset
         start_time = time.time()
-        for i, name in enumerate(base_img_path_lists):
-            print("process " , i , "base frame")
-            src = cv2.imread(name)
-            src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
-            src = cv2.resize(src, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
-            input = np.expand_dims(src, axis = 0)
-            input = np.expand_dims(input, axis = 3)
-            output = sess.run(y, feed_dict={x: input})
-            base_features[i, :] = output
+        if not os.path.exists(database):
+            for i, name in enumerate(base_img_path_lists):
+                print("process " , i , "base frame")
+                src = cv2.imread(name)
+                src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+                src = cv2.resize(src, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
+                input = np.expand_dims(src, axis = 0)
+                input = np.expand_dims(input, axis = 3)
+                output = sess.run(y, feed_dict={x: input})
+                base_features[i, :] = output
+            np.save(database, base_features)
+            print("database is not existed")
+        else:
+            print("database is already exists")
+            base_features = np.load(str(database))
         end_time = time.time()
         cost_time = (end_time - start_time) * 1000
         print("extract features from base dataset cost:{} ms ".format(cost_time))
         # extract features from test dataset 
-        for i, name in enumerate (test_img_path_lists):
+        for i, img in enumerate (test_img_path_lists):
             print("process " , i , "test frame")
-            src = cv2.imread(name)
+            src = cv2.imread(img)
             src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
             src = cv2.resize(src, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
             input = np.expand_dims(src, axis = 0)
@@ -136,32 +169,30 @@ if __name__ == "__main__":
     end_time = time.time()
     cost_time = (end_time - start_time) * 1000
     print("Search candidate from base dataset cost:{} ms ".format(cost_time))
-
+    cooresponding_txt = []
     recall_test_values = [1, 3, 5]
     correct_at_n = np.zeros(int(recall_test_values[-1]))
     correct_at_n_final = np.zeros(len(recall_test_values))
-
     #groundtruth is index 1 of database is according to index 1 of query
-    for col in range(0, recall_test_values[-1]):
-        for row_index in range(0, test_legnth):
-            if(predictions[row_index, col] == row_index):
-                correct_at_n[col] += 1
-    correct_at_n_sum = np.cumsum(correct_at_n)
-    for i, topN in enumerate(recall_test_values):
-        correct_at_n_final[i] = correct_at_n_sum[topN - 1]
-    #correct_score = np.zeros((3, test_legnth), dtype = np.float)
+    interval_threshold = 0.3
+    for row_index in range(0, test_legnth):
+        query_name = test_img_name_lists[row_index]
+        query_name_path = test_img_path_lists[row_index]
+        predict_index = predictions[row_index, 1]
+        base_name = base_img_name_lists[predict_index]
+        base_name_path = base_img_path_lists[predict_index]
+        if abs(int(query_name) - int(base_name)) > 120 * 1e6 and distances[row_index, 1] < interval_threshold:
+            coorespond = []
+            coorespond.append(query_name)
+            coorespond.append(base_name)
+            cooresponding_txt.append(coorespond)
+            cp_img(base_name, base_name_path, query_name, query_name_path)
 
-    recall_at_n = correct_at_n_final * 100 / test_legnth
-    recall_txt = join(os.getcwd(), "recall.txt")
-    distances_txt = join(os.getcwd(), "distance.txt")
-    predictions_output = predictions + 1
-    with open(recall_txt, 'w') as fid:
-        fid.write("{}\n".format(predictions_output))
-        for i, n in enumerate(recall_test_values):
-            fid.write("====> Recall Top-{}: ({}/{}) {:.4f}%\n".format(n, correct_at_n_final[i], test_legnth, recall_at_n[i]))
-            print("====> Recall Top-{}: ({}/{}) {:.4f}%\n".format(n, correct_at_n_final[i], test_legnth , recall_at_n[i]))
-    with open(distances_txt, 'w') as fid:
-        fid.write("{}%\n".format(distances))
-    # save into txt 
-    #PRC_Matches_writePath = datetime.now().strftime('%b%d_%H-%M-%S_') + 'Mobilevlad_Presicion_recall_Data.txt'
-    #np.savetxt(PRC_Matches_writePath, correct_score, fmt='%f', delimiter=',')
+    output_array = list2matrix(cooresponding_txt)
+    #print(output_array)
+    cooresponding_txt_array = np.array(cooresponding_txt)
+    coorespond_txt = join(os.getcwd(), "coorespond.txt")
+    with open(coorespond_txt, 'w') as fid:
+        fid.write("{}\n".format(cooresponding_txt_array))
+
+
